@@ -1,0 +1,13 @@
+
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated orthophoto and processing outputs
+output/
+
+# Temporary files
+.ipynb_checkpoints/
+.pytest_cache/
