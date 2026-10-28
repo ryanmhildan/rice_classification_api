@@ -124,6 +124,16 @@ python pipeline.py full --images data/drone_images --output output
 
 Tambahkan `--json-only` untuk mencetak hasil sebagai JSON saja.
 
+### Notebook
+
+[`notebooks/rice_orthophoto_pipeline.ipynb`](notebooks/rice_orthophoto_pipeline.ipynb) adalah versi riset dari pipeline yang sama, ditulis sebelum logikanya dipindah ke `services/`. Notebook ini menyimpan proses kalibrasi yang tidak ada di backend:
+
+- **Sel 9b sampai 9d**: uji sensitivitas batas hue, histogram sebaran hue, dan uji ambang saturation/value. Dari sinilah nilai threshold di tabel parameter berasal.
+- **Sel 16**: rekap studi kasus dua lahan.
+- **Sel 17**: checklist uji fungsional black-box berdasarkan file output.
+
+Jalankan Jupyter dari folder `notebooks/` dengan venv backend sebagai kernel. Foto drone dibaca dari `notebooks/data/drone_images/1` dan `.../2` (tidak ikut di-commit), output ditulis ke `notebooks/output/`, dan Sel 14 menyimpan hasil ke database yang sama dengan backend.
+
 ## Endpoint
 
 <a href="docs/screenshots/swagger.png"><img src="docs/screenshots/swagger.png" alt="Swagger UI yang menampilkan semua endpoint backend" width="100%"></a>
