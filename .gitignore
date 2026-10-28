@@ -11,3 +11,13 @@ output/
 # Temporary files
 .ipynb_checkpoints/
 .pytest_cache/
+
+# AI assistant files
+.claude/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md

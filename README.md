@@ -1,270 +1,165 @@
-# Rice Harvest Classification API
+# Rice Classification API
 
-Backend FastAPI untuk sistem deteksi kesiapan panen padi berbasis segmentasi warna HSV pada orthophoto hasil pemetaan drone.
+Backend FastAPI untuk mendeteksi kesiapan panen padi dari foto drone. Foto digabung menjadi orthophoto lewat NodeODM, lalu setiap piksel padi diklasifikasikan sebagai matang (kuning) atau belum matang (hijau) dengan segmentasi warna HSV. Hasil akhirnya berupa verdict **SIAP PANEN** atau **BELUM SIAP PANEN**, peta GeoTIFF yang bisa dibuka di QGIS, dan statistik JSON.
 
-Bagian dari skripsi: **"Deteksi dan Pemetaan Kesiapan Panen Padi Menggunakan Citra Drone Berbasis Edge Computing dan Sistem Informasi Geografis (SIG)"**
-Ryan Muhammad Hildan — Teknik Informatika UNIKOM 2026
+![Contoh hasil klasifikasi](docs/screenshots/visualisasi-hasil.jpg)
 
----
+Semua proses berjalan lokal di laptop tanpa layanan cloud. Antarmuka webnya ada di repo [rice-harvest-web](https://github.com/ryanmhildan/rice-harvest-web).
 
-## Arsitektur Sistem
+Dibuat sebagai bagian dari skripsi *Deteksi dan Pemetaan Kesiapan Panen Padi Menggunakan Citra Drone Berbasis Edge Computing dan Sistem Informasi Geografis (SIG)*, Teknik Informatika UNIKOM 2026.
 
-```
-[Drone] → [Foto JPG] → [NodeODM Docker :3000] → [Orthophoto GeoTIFF]
-                                ↕ PyODM
-                       [FastAPI Backend :8000]   ← repo ini
-                                ↕ HTTP REST
-                       [Next.js Frontend :3001]
-```
-
-Sistem berjalan **sepenuhnya offline** (edge computing) di laptop Ground Control Station. Tidak ada ketergantungan cloud.
-
----
-
-## Fitur
-
-- Upload batch foto drone → submit job stitching ke NodeODM secara async
-- Polling status job stitching (queued → running → completed/failed)
-- Segmentasi warna HSV: piksel **kuning** (matang) vs **hijau** (belum matang)
-- Pra-pemrosesan: Gaussian Blur + CLAHE + konversi RGB→HSV
-- Verdict otomatis: **SIAP PANEN** (≥ 60% kuning) atau **BELUM SIAP PANEN** (< 60%)
-- Export output: GeoTIFF klasifikasi, PNG overlay Leaflet, PNG visualisasi, JSON statistik
-- Endpoint serve file langsung ke frontend
-- Riwayat semua hasil klasifikasi via `GET /results`
-- Swagger UI tersedia di `/docs`
-
----
-
-## Pipeline
+## Cara kerja
 
 ```
-Foto drone (JPG + EXIF GPS)
-        ↓  upload & submit ke NodeODM
-Orthophoto.tif (georeferensi WGS84)
-        ↓  Gaussian Blur + CLAHE + RGB→HSV
-HSV array
-        ↓  thresholding kuning & hijau
-Mask piksel matang / belum matang
-        ↓  hitung rasio
-Verdict + statistik piksel
-        ↓  export
-GeoTIFF klasifikasi + PNG visualisasi + JSON statistik
+Foto drone (JPG + EXIF GPS, overlap 70-80%)
+  -> NodeODM: stitching menjadi orthophoto GeoTIFF
+  -> Gaussian blur, CLAHE, konversi RGB ke HSV
+  -> Threshold HSV: mask kuning dan mask hijau, dirapikan dengan morfologi
+  -> Persentase kuning terhadap total piksel padi
+  -> >= 60% SIAP PANEN, < 60% BELUM SIAP PANEN
+  -> Ekspor GeoTIFF, PNG, dan JSON
 ```
 
----
+Stitching bisa memakan waktu 10 menit sampai beberapa jam tergantung jumlah foto, jadi dijalankan sebagai job asinkron yang statusnya di-polling. Klasifikasi sendiri biasanya selesai di bawah satu menit.
 
-## Prasyarat
+### Parameter
 
-| Software | Versi | Keterangan |
-|---|---|---|
-| Python | 3.10+ | Direkomendasikan 3.12 |
-| Docker Desktop | terbaru | Untuk NodeODM |
-| NodeODM | image `opendronemap/nodeodm` | Stitching engine |
+Nilai di bawah ini ada di `services/classification.py` dan sudah dikalibrasi untuk citra sawah. Hue memakai skala OpenCV (0 sampai 179).
 
----
+| Parameter | Nilai |
+|---|---|
+| Kuning (matang), H/S/V | `[20, 60, 60]` sampai `[34, 255, 255]` |
+| Hijau (belum matang), H/S/V | `[35, 40, 40]` sampai `[85, 255, 255]` |
+| Kernel Gaussian blur | 5 |
+| CLAHE clip limit / tile | 2.0 / 8 |
+| Kernel morfologi | 5 |
+| Ambang siap panen | 0.60 (bisa diubah per request) |
+| Resolusi orthophoto ODM | 5 cm/px |
 
-## Instalasi
+Rentang hue kuning dan hijau sengaja tidak beririsan. Sisa tumpang tindih yang muncul setelah operasi closing diselesaikan berdasarkan nilai hue piksel.
 
-**1. Clone repo dan masuk ke folder:**
-```cmd
-git clone <repo-url>
-cd rice_classification_api
-```
+## Menjalankan
 
-**2. Setup virtual environment dan install dependencies:**
-```cmd
-setup_environment.bat
-```
+Prasyarat:
 
-Atau manual:
-```cmd
-python -m venv venv
-venv\Scripts\activate.bat
-pip install -r requirements.txt
-```
+- Python 3.12 (minimal 3.10)
+- Docker Desktop
+- Windows: Microsoft C++ Build Tools jika instalasi `rasterio` gagal
 
-> Catatan Windows: `rasterio` membutuhkan Microsoft C++ Build Tools. Install dari [visualstudio.microsoft.com/visual-cpp-build-tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) jika instalasi gagal.
+**1. NodeODM**
 
-**3. Jalankan NodeODM (pertama kali):**
-```cmd
+```bash
 docker run -d -p 3000:3000 --name nodeodm opendronemap/nodeodm
 ```
 
-Selanjutnya cukup:
-```cmd
-docker start nodeodm
-```
+Setelah container pertama kali dibuat, cukup `docker start nodeodm`. Cek di http://localhost:3000.
 
-**4. Jalankan API:**
-```cmd
-start_api.bat
-```
-
-**5. Verifikasi:**
-- NodeODM: buka `http://localhost:3000`
-- Backend API: buka `http://localhost:8000/docs`
-
----
-
-## Struktur Folder
-
-```
-rice_classification_api/
-├── api.py                    # FastAPI app — 9 endpoint
-├── pipeline.py               # CLI orchestrator (alternatif ke API)
-├── services/
-│   ├── stitching.py          # Wrapper PyODM untuk NodeODM
-│   └── classification.py     # Segmentasi HSV + ekspor output
-├── requirements.txt
-├── setup_environment.bat
-├── start_api.bat
-├── sample_test.py            # Verifikasi instalasi
-├── smoke_test_api.py         # Test 9 endpoint end-to-end
-├── BACKEND_API.md            # Kontrak API (source of truth)
-├── data/
-│   └── drone_images/         # Input foto drone
-└── output/
-    ├── uploads/              # Foto per job (temp)
-    ├── orthophoto/           # Hasil stitching (.tif)
-    ├── orthophoto_web/       # PNG RGBA untuk Leaflet overlay
-    ├── classification/       # GeoTIFF hasil klasifikasi
-    ├── classification_web/   # PNG overlay klasifikasi untuk Leaflet
-    ├── visualization/        # PNG composite (untuk dokumentasi)
-    └── results/              # JSON ringkasan per run
-```
-
----
-
-## Endpoint API
-
-| Method | Path | Deskripsi |
-|---|---|---|
-| `GET` | `/` | Info API |
-| `GET` | `/health` | Health check |
-| `GET` | `/nodeodm/status` | Cek koneksi NodeODM |
-| `POST` | `/jobs/stitch` | Upload foto + mulai stitching (async) |
-| `GET` | `/jobs/{job_id}` | Polling status job |
-| `POST` | `/jobs/{job_id}/classify` | Klasifikasi setelah stitching selesai |
-| `POST` | `/classify` | Klasifikasi orthophoto langsung (skip stitching) |
-| `GET` | `/files/{kategori}/{nama}` | Serve file output |
-| `GET` | `/results` | List semua hasil |
-
-Dokumentasi lengkap dengan contoh request/response: lihat [BACKEND_API.md](BACKEND_API.md) atau Swagger UI di `http://localhost:8000/docs`.
-
-### Contoh: upload foto dan klasifikasi
+**2. Backend**
 
 ```bash
-# 1. Upload foto (minimum 4 file JPG)
+git clone https://github.com/ryanmhildan/rice_classification_api.git
+cd rice_classification_api
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Di Windows langkah di atas sudah dibungkus dalam `setup_environment.bat` (sekali saja) dan `start_api.bat`.
+
+Swagger UI tersedia di http://localhost:8000/docs.
+
+![Swagger UI](docs/screenshots/swagger.png)
+
+Database SQLite untuk riwayat per lahan (`rice_harvest.db`) dibuat otomatis di folder induk repo saat pertama kali dijalankan.
+
+## Endpoint
+
+| Method | Path | Fungsi |
+|---|---|---|
+| GET | `/health` | Health check backend |
+| GET | `/nodeodm/status` | Cek koneksi ke NodeODM |
+| POST | `/jobs/stitch` | Upload foto (min. 4) dan mulai stitching |
+| GET | `/jobs/{job_id}` | Status job stitching |
+| POST | `/jobs/{job_id}/classify` | Klasifikasi orthophoto hasil job |
+| POST | `/classify` | Klasifikasi orthophoto yang sudah ada di disk |
+| POST | `/upload-manual` | Upload orthophoto GeoTIFF (dan PNG klasifikasi opsional) yang diproses di luar sistem |
+| GET | `/results` | Daftar semua hasil |
+| GET | `/files/{kategori}/{nama_file}` | Unduh file output |
+| GET | `/api/lahan` | Daftar lahan |
+| GET | `/api/lahan/{id_lahan}/riwayat` | Riwayat deteksi satu lahan |
+| GET | `/api/riwayat` | Semua riwayat deteksi |
+
+Format request dan response lengkap ada di [BACKEND_API.md](BACKEND_API.md).
+
+Contoh alur lewat curl:
+
+```bash
 curl -X POST http://localhost:8000/jobs/stitch \
-  -F "images=@foto1.jpg" \
-  -F "images=@foto2.jpg" \
-  -F "images=@foto3.jpg" \
-  -F "images=@foto4.jpg"
+  -F "images=@DJI_0001.JPG" -F "images=@DJI_0002.JPG" \
+  -F "images=@DJI_0003.JPG" -F "images=@DJI_0004.JPG"
+# {"job_id": "abc123", "status": "queued", ...}
 
-# Response: { "job_id": "abc123", "status": "queued", ... }
-
-# 2. Polling sampai status = "completed" (stitching ~30 menit - 3 jam)
 curl http://localhost:8000/jobs/abc123
+# ulangi sampai status "completed"
 
-# 3. Klasifikasi setelah selesai
 curl -X POST "http://localhost:8000/jobs/abc123/classify?threshold=0.60"
-
-# Response: { "verdict": "SIAP PANEN", "yellow_pct_of_rice": 65.34, ... }
+# {"verdict": "SIAP PANEN", "yellow_pct_of_rice": 74.23, ...}
 ```
 
----
+## CLI
 
-## Parameter Teknis
-
-Parameter HSV dan ODM telah dikalibrasi untuk kondisi lahan padi dan tidak boleh diubah sembarangan:
-
-| Parameter | Nilai | Keterangan |
-|---|---|---|
-| `hsv_lower_yellow` | `[20, 60, 60]` | Batas bawah warna kuning (matang) |
-| `hsv_upper_yellow` | `[40, 255, 255]` | Batas atas warna kuning |
-| `hsv_lower_green` | `[35, 40, 40]` | Batas bawah warna hijau (belum matang) |
-| `hsv_upper_green` | `[85, 255, 255]` | Batas atas warna hijau |
-| `threshold_default` | `0.60` | Persentase kuning minimum untuk SIAP PANEN |
-| `gaussian_kernel` | `5` | Kernel Gaussian Blur |
-| `clahe_clip_limit` | `2.0` | CLAHE contrast limit |
-| `orthophoto_resolution` | `5 cm/px` | Resolusi target ODM |
-
----
-
-## CLI Usage
+Pipeline juga bisa dijalankan tanpa server:
 
 ```bash
-# Aktifkan venv
-venv\Scripts\activate.bat
-
-# Cek koneksi NodeODM
 python pipeline.py check-nodeodm
-
-# Klasifikasi orthophoto yang sudah ada
-python pipeline.py classify --ortho data/sample.tif --output output
-
-# Pipeline lengkap dari folder foto drone
+python pipeline.py classify --ortho path/ke/orthophoto.tif --output output
 python pipeline.py full --images data/drone_images --output output
-
-# Output JSON saja
-python pipeline.py classify --ortho ortho.tif --output out --json-only
 ```
 
----
+Tambahkan `--json-only` untuk mencetak hasil sebagai JSON saja.
+
+## Output
+
+Setiap klasifikasi menulis ke folder `output/` (tidak ikut di-commit):
+
+| Folder | Isi |
+|---|---|
+| `orthophoto/` | Orthophoto GeoTIFF hasil ODM |
+| `classification/` | GeoTIFF 1 band berisi kelas per piksel |
+| `orthophoto_web/`, `classification_web/` | PNG RGBA untuk overlay Leaflet |
+| `visualization/` | Peta komposit PNG 300 DPI untuk laporan |
+| `results/` | JSON berisi verdict, persentase, CRS, dan bounds |
 
 ## Testing
 
 ```bash
-# Verifikasi instalasi (tanpa NodeODM)
-python sample_test.py
-
-# Smoke test semua endpoint (NodeODM + API harus jalan)
-python smoke_test_api.py
+python sample_test.py       # cek instalasi dengan data dummy, tanpa NodeODM
+python smoke_test_api.py    # uji endpoint, butuh API dan NodeODM aktif
 ```
 
----
+## Struktur
 
-## Output yang Dihasilkan
-
-Setiap run klasifikasi menghasilkan 5 file di folder `output/`:
-
-| File | Format | Kegunaan |
-|---|---|---|
-| `orthophoto/*.tif` | GeoTIFF WGS84 | Buka di QGIS untuk validasi |
-| `classification/*.tif` | GeoTIFF 1-band | Peta klasifikasi georeferensi |
-| `orthophoto_web/*.png` | PNG RGBA | Overlay orthophoto di Leaflet |
-| `classification_web/*.png` | PNG RGBA | Overlay klasifikasi di Leaflet |
-| `visualization/*.png` | PNG RGB | Gambar komposit untuk dokumentasi |
-| `results/*.json` | JSON | Statistik lengkap (verdict, piksel, bounds) |
-
----
+```
+api.py               definisi endpoint FastAPI
+routes_riwayat.py    endpoint /api untuk riwayat per lahan
+database.py, models.py, crud.py   SQLite via SQLModel
+pipeline.py          CLI
+services/
+  stitching.py       wrapper PyODM ke NodeODM
+  classification.py  pra-pemrosesan, segmentasi HSV, ekspor
+```
 
 ## Troubleshooting
 
-| Error | Penyebab | Solusi |
-|---|---|---|
-| `Cannot connect to NodeODM` | Docker belum jalan | Jalankan Docker Desktop → `docker start nodeodm` |
-| `ModuleNotFoundError: services` | Folder aktif salah | `cd rice_classification_api` |
-| `rasterio` install gagal | MSVC Build Tools belum ada | Install Microsoft C++ Build Tools |
-| ODM gagal: fitur kurang | Foto kurang overlap | Pastikan overlap drone 70–80% |
-| WinError 32 saat stitching | OneDrive file locking | Pindahkan proyek dari `Documents/` ke `C:\skripsi\` |
-| `413 Payload Too Large` | File terlalu besar | Edit `start_api.bat`: tambah `--limit-max-requests` |
-
----
-
-## Dependensi Utama
-
-| Library | Versi | Fungsi |
-|---|---|---|
-| FastAPI | 0.115.0 | Web framework async |
-| OpenCV | 4.10.0 | Segmentasi HSV |
-| Rasterio | 1.3.11 | Baca/tulis GeoTIFF georeferensi |
-| PyODM | 1.5.10 | Client NodeODM untuk stitching |
-| NumPy | 1.26.4 | Operasi array piksel |
-| Pydantic | 2.9.2 | Validasi request/response |
-
----
+| Masalah | Solusi |
+|---|---|
+| `Cannot connect to NodeODM` | Nyalakan Docker Desktop lalu `docker start nodeodm` |
+| `ModuleNotFoundError: services` | Jalankan uvicorn dari dalam folder repo |
+| ODM gagal karena fitur tidak cukup | Pastikan overlap foto 70-80% |
+| `WinError 32` saat stitching | File dikunci OneDrive atau antivirus. Pindahkan proyek keluar dari folder yang tersinkron OneDrive |
+| CORS error dari frontend | Tambahkan origin di `allow_origins` pada `api.py` |
 
 ## Lisensi
 
-Proyek ini dibuat untuk keperluan skripsi akademis. Tidak untuk distribusi komersial.
+Dibuat untuk keperluan skripsi. Silakan gunakan sebagai referensi akademis.
